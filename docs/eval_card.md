@@ -16,3 +16,11 @@ Card này đi kèm mỗi báo cáo và được dùng lại ở Day 10.
 - **Phạm vi pilot:** Claim hoàn phí ship / bồi thường hàng hỏng đơn lẻ trên `POL-2026-11`, chạy qua `swarm` + host `issue_refund`.
 - **Giới hạn / bằng chứng còn thiếu:** MockLLM, 14 item, judge replay trên CSV công khai; không đo trên người dùng thật.
 - **Khi nào tăng eval-set version:** Khi thêm item mới từ trace/adversarial (v2) hoặc đổi định nghĩa nhãn.
+
+## 6. Kết quả v2 & Anti-gaming (M5–M7)
+- **Eval set v2:** `data/eval/eval_set_v2.jsonl` (28 item × 5 seed, `eval_set_sha = 0d09e2d37f15`), thêm `adversarial_v2.json` và 8 cơ chế trong `config/fm_map.yaml`.
+- **Baseline v2 (`swarm`, `E-swarm-20261118-0d09`):** `pass_rate=0.9786`, `pass_hat_5=0.8929`, `pass_at_5=1.0`, `approval_bypass=0`, `secret_leak=0`, `refund_amount_correct=0.9786`, `reply_matches_ledger=1.0`, `cost_per_success=50.8077`.
+- **A/A noise check (`--aa 66,77,88,99,110`):** MockLLM cho `Δ = +0.0000` trên mọi metric; đặt sàn `pass_hat_5 >= 0.85` (dưới baseline `0.8929`). Với LLM thật có nhiễu khác 0, ngưỡng phải đặt ngoài dải nhiễu A/A để tránh chặn nhầm PR trung thực.
+- **Mutation scorecard (`lab9.mutation`):** `3/3` regression bị chặn, `0` false alarm (`fixed` và `honest_refactor` merge; `seeded_regression`, `slice_regression` qua `slice:money_movement/pass_rate`, `flaky_regression` qua `pass_hat_5` bị chặn).
+- **Anti-gaming (`lab9.traps`):** chặn 4/4 bẫy công khai (`evaluator_errors_as_nan`, `dropped_failing_rows`, `cherry_picked_seeds`, `loosened_spec` qua ratchet `--base-spec`).
+- **Giới hạn cỡ mẫu:** 5 seed không đủ bắt ổn định lỗi hiếm (ví dụ 1/3 seed); không hạ ngưỡng quá sát chỉ để ép bắt lỗi hiếm mà ghi nhận làm giới hạn cỡ mẫu.
