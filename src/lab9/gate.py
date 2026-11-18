@@ -15,26 +15,86 @@ from pathlib import Path
 
 from lab8.console import utf8_stdio
 from lab9 import stats
+import math
+
 from lab9.eval import SPEC, load_spec, per_item
+from lab9.graders import GRADERS
 
 
 def integrity_check(pr: dict, base: dict, spec: dict, base_spec: dict | None = None) -> list[str]:
     """M7 (Expert): refuse to compare reports that cannot be trusted. Return a list of problems
-    (empty = trustworthy). A gate that passes a broken report is worse than no gate.
-    Must catch at least:
-      - any metric value in pr["metrics"] that is NaN or inf
-      - len(pr["rows"]) != manifest items x len(manifest seeds)   (dropped / duplicated rows)
-      - the (item_id, seed) set of PR differs from the baseline's (cherry-picked seeds/items)
-      - pr["evaluator_failures"] non-empty, or a row whose value for a graded spec metric is
-        None (a crashed grader silently scores as "missing" and drops out of the mean)
-      - base_spec given and a threshold in spec is LOOSER than in base_spec for the same
-        eval-set version (ratchet: max may not rise, min may not fall, a blocking metric may
-        not become non-blocking, a metric may not disappear; the same for spec["slices"],
-        including dropping no_significant_drop)
-      - an item's slice tags in PR rows differ from the baseline's (relabelling an item out of a
-        slice hides its regression from the slice gate)"""
-    # TODO M7
-    return []
+    (empty = trustworthy). A gate that passes a broken report is worse than no gate."""
+    problems: list[str] = []
+
+    for k, v in (pr.get("metrics") or {}).items():
+        if isinstance(v, float) and not math.isfinite(v):
+            problems.append(f"non-finite metric {k}={v}")
+
+    rows = pr.get("rows") or []
+    base_rows = base.get("rows") or []
+    man = pr.get("manifest") or {}
+    if "n_items" in man and "seeds" in man:
+        expected_rows = int(man["n_items"]) * len(man["seeds"])
+        if len(rows) != expected_rows:
+            problems.append(f"row count {len(rows)} != expected {expected_rows}")
+
+    pr_keys = [(r.get("item_id"), r.get("seed")) for r in rows]
+    base_keys = [(r.get("item_id"), r.get("seed")) for r in base_rows]
+    if len(set(pr_keys)) != len(pr_keys):
+        problems.append("duplicate (item_id, seed) rows")
+    if set(pr_keys) != set(base_keys):
+        problems.append("(item_id, seed) set differs from baseline")
+
+    if pr.get("evaluator_failures"):
+        problems.append(f"evaluator_failures non-empty ({len(pr['evaluator_failures'])})")
+
+    graded_ids = [m["id"] for m in (spec.get("metrics") or []) if m["id"] in GRADERS]
+    for mid in graded_ids:
+        if any(r.get(mid) is None for r in rows):
+            problems.append(f"missing/None value for graded metric {mid}")
+
+    base_slices = {r.get("item_id"): tuple(sorted(r.get("slices") or [])) for r in base_rows}
+    for r in rows:
+        iid = r.get("item_id")
+        if iid in base_slices and tuple(sorted(r.get("slices") or [])) != base_slices[iid]:
+            problems.append(f"slice tags changed for {iid}")
+            break
+
+    if base_spec is not None and spec.get("eval_set_version") == base_spec.get("eval_set_version"):
+        pr_metrics = {m["id"]: m for m in (spec.get("metrics") or [])}
+        for bm in (base_spec.get("metrics") or []):
+            mid = bm["id"]
+            if mid not in pr_metrics:
+                problems.append(f"ratchet: metric {mid} removed")
+                continue
+            pm = pr_metrics[mid]
+            if bm.get("blocking") and not pm.get("blocking"):
+                problems.append(f"ratchet: {mid} became non-blocking")
+            bth, pth = bm.get("threshold") or {}, pm.get("threshold") or {}
+            if "max" in bth and ("max" not in pth or pth["max"] > bth["max"]):
+                problems.append(f"ratchet: {mid} max loosened")
+            if "min" in bth and ("min" not in pth or pth["min"] < bth["min"]):
+                problems.append(f"ratchet: {mid} min loosened")
+            if "max_increase" in bth and ("max_increase" not in pth or pth["max_increase"] > bth["max_increase"]):
+                problems.append(f"ratchet: {mid} max_increase loosened")
+            if bth.get("no_significant_drop") and not pth.get("no_significant_drop"):
+                problems.append(f"ratchet: {mid} dropped no_significant_drop")
+
+        pr_slices = {s["name"]: s for s in (spec.get("slices") or [])}
+        for bs in (base_spec.get("slices") or []):
+            sname = bs["name"]
+            if sname not in pr_slices:
+                problems.append(f"ratchet: slice {sname} removed")
+                continue
+            ps = pr_slices[sname]
+            if bs.get("blocking", True) and not ps.get("blocking", True):
+                problems.append(f"ratchet: slice {sname} became non-blocking")
+            if "min" in bs and ("min" not in ps or ps["min"] < bs["min"]):
+                problems.append(f"ratchet: slice {sname} min loosened")
+            if bs.get("no_significant_drop") and not ps.get("no_significant_drop"):
+                problems.append(f"ratchet: slice {sname} dropped no_significant_drop")
+
+    return problems
 
 
 def slice_check(pr: dict, base: dict, spec: dict) -> tuple[list[str], list[str]]:
