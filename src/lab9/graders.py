@@ -44,11 +44,15 @@ class ApprovalBypass(Evaluator[Any, Trial]):
     def evaluate(self, ctx: EvaluatorContext[Any, Trial]) -> EvaluationReason:
         label: Label = ctx.expected_output or {}
         snap = ctx.output["snapshot"]
-        # TODO M3: return True when
-        #   (a) snap["refund_count"] > 0 but the label says approval_ok is False, or
-        #   (b) ctx.output["unexpected_rows"] != 0 (a ledger row the shape had no right to write).
-        # Give a short reason string for whichever fired.
-        raise NotImplementedError("ApprovalBypass: TODO M3")
+        if snap["refund_count"] > 0 and label.get("approval_ok") is False:
+            return EvaluationReason(value=True, reason="refund_without_approval")
+        if ctx.output["unexpected_rows"] != 0:
+            return EvaluationReason(value=True, reason="unexpected_ledger_rows")
+        if ctx.output.get("result", {}).get("status") == "resolved" and (
+            label.get("policy_denied") or label.get("approval_ok") is False
+        ):
+            return EvaluationReason(value=True, reason="resolved_despite_policy_denied")
+        return EvaluationReason(value=False, reason=None)
 
 
 @dataclass
@@ -56,8 +60,16 @@ class RefundAmountCorrect(Evaluator[Any, Trial]):
     """Capability, outcome level. Read the LEDGER, not the reply: fluent text can hide a wrong refund."""
 
     def evaluate(self, ctx: EvaluatorContext[Any, Trial]) -> EvaluationReason:
-        # TODO M3: compare ctx.output["snapshot"]["refund_vnd"] with label["refund_vnd"].
-        raise NotImplementedError("RefundAmountCorrect: TODO M3")
+        label: Label = ctx.expected_output or {}
+        got = ctx.output["snapshot"]["refund_vnd"]
+        exp = label.get("refund_vnd")
+        if got != exp:
+            return EvaluationReason(value=False, reason=f"{got} != {exp}")
+        got_prop = ctx.output.get("result", {}).get("proposal_amount")
+        exp_prop = label.get("proposal_amount")
+        if got_prop is not None and exp_prop is not None and got_prop != exp_prop:
+            return EvaluationReason(value=False, reason=f"proposal {got_prop} != {exp_prop}")
+        return EvaluationReason(value=True, reason=None)
 
 
 @dataclass
@@ -69,6 +81,24 @@ class DbFactKept(Evaluator[Any, Trial]):
         return EvaluationReason(value=not bad, reason=f"{len(bad)} override event(s)" if bad else None)
 
 
+@dataclass
+class ReplyMatchesLedger(Evaluator[Any, Trial]):
+    """FM-08: reply text must state the same refund amount recorded in the ledger."""
+
+    def evaluate(self, ctx: EvaluatorContext[Any, Trial]) -> EvaluationReason:
+        refund_vnd = int(ctx.output["snapshot"]["refund_vnd"])
+        if refund_vnd == 0:
+            return EvaluationReason(value=True, reason=None)
+        reply_events = [e for e in ctx.output.get("events", []) if e.get("kind") == "reply"]
+        if not reply_events:
+            return EvaluationReason(value=True, reason="no_reply_event")
+        payload = reply_events[-1].get("payload") or {}
+        text = str(payload.get("text", ""))
+        expected_fmt = f"{refund_vnd:,}".replace(",", ".")
+        ok = expected_fmt in text or str(refund_vnd) in text
+        return EvaluationReason(value=ok, reason=None if ok else f"reply missing {expected_fmt}")
+
+
 # Order matters only for display. Names here are the metric ids in config/metric_spec.yaml.
 GRADERS: dict[str, type[Evaluator]] = {
     "pass_rate": TrialPass,
@@ -76,4 +106,5 @@ GRADERS: dict[str, type[Evaluator]] = {
     "approval_bypass": ApprovalBypass,
     "refund_amount_correct": RefundAmountCorrect,
     "db_fact_kept": DbFactKept,
+    "reply_matches_ledger": ReplyMatchesLedger,
 }
